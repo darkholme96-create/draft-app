@@ -29,13 +29,13 @@ jobs:
           flutter-version: '3.19.0'
           channel: 'stable'
 
-      - name: 5. 클린 프로젝트 생성 및 소스코드 자동 주입
+      - name: 5. 클린 프로젝트 생성 및 물음표 도움말 UI가 포함된 최종 소스 주입
         run: |
           rm -rf android lib pubspec.yaml pubspec.lock
           flutter create --org com.maritime --project-name draft_survey_app --platforms android .
           flutter pub add camera:0.10.5+9 sensors_plus:4.0.2 ffi:2.1.2
 
-          # (1) C++ 엔진 파일 자동 생성
+          # (1) C++ 엔진 파일 생성
           mkdir -p android/app/src/main/cpp
           cat << 'EOF' > android/app/src/main/cpp/draft_core_engine.cpp
           #include <opencv2/core.hpp>
@@ -334,7 +334,7 @@ jobs:
           }
           EOF
 
-          # (3) main.dart 생성 (상단에 import 'dart:ffi' as ffi; 추가 완료!)
+          # (3) main.dart 생성 (물음표 도움말 버튼 및 6개소 선원 친화적 흘수 기록판 UI)
           cat << 'EOF' > lib/main.dart
           import 'dart:async';
           import 'dart:ffi' as ffi;
@@ -342,137 +342,756 @@ jobs:
           import 'package:camera/camera.dart';
           import 'package:sensors_plus/sensors_plus.dart';
           import 'native_draft_bridge.dart';
+
           Future<void> main() async {
             WidgetsFlutterBinding.ensureInitialized();
             final cameras = await availableCameras();
-            runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: ThemeData.dark(useMaterial3: true), home: DraftSurveyScreen(cameras: cameras)));
+            runApp(MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: ThemeData.dark(useMaterial3: true).copyWith(
+                scaffoldBackgroundColor: const Color(0xFF0D131A),
+              ),
+              home: DraftBoardHomeScreen(cameras: cameras),
+            ));
           }
+
+          class DraftBoardHomeScreen extends StatefulWidget {
+            final List<CameraDescription> cameras;
+            const DraftBoardHomeScreen({super.key, required this.cameras});
+
+            @override
+            State<DraftBoardHomeScreen> createState() => _DraftBoardHomeScreenState();
+          }
+
+          class _DraftBoardHomeScreenState extends State<DraftBoardHomeScreen> {
+            final Map<String, double?> _drafts = {
+              'FWD_P': null, 'FWD_S': null,
+              'MID_P': null, 'MID_S': null,
+              'AFT_P': null, 'AFT_S': null,
+            };
+
+            final Map<String, String> _titles = {
+              'FWD_P': '선수 좌현\n(FWD P)',
+              'FWD_S': '선수 우현\n(FWD S)',
+              'MID_P': '중앙 좌현\n(MID P)',
+              'MID_S': '중앙 우현\n(MID S)',
+              'AFT_P': '선미 좌현\n(AFT P)',
+              'AFT_S': '선미 우현\n(AFT S)',
+            };
+
+            // 사용법 도움말 팝업창 (물음표 버튼)
+            void _showHelpDialog() {
+              showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  backgroundColor: const Color(0xFF16202A),
+                  title: const Row(
+                    children: [
+                      Icon(Icons.help_outline, color: Colors.cyanAccent),
+                      SizedBox(width: 8),
+                      Text('선원용 흘수측정 사용법'),
+                    ],
+                  ),
+                  content: const SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('1. 위치 선택', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+                        Text('• 메인 화면의 선체 모식도에서 측정할 위치(예: 선수 좌현)를 터치합니다.'),
+                        SizedBox(height: 10),
+                        Text('2. 카메라 측정 방법', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+                        Text('• 카메라가 켜지면 화면 아래 버튼으로 숫자를 맞춘 뒤, 화면 속 흘수 글자의 [맨 아랫줄]을 2~3곳 터치합니다.'),
+                        Text('• [눈금 고정] 버튼을 누르고 파도가 2~3번 지나갈 동안(약 20~30초) 비추면 파도와 물보라가 자동으로 보정됩니다.'),
+                        SizedBox(height: 10),
+                        Text('3. 결과 저장 및 MOM 계산', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.amberAccent)),
+                        Text('• [이 값으로 기록판에 저장]을 누르면 메인 화면 보드에 자동 입력되며, 6곳이 모두 채워지면 평균 흘수(M.O.M)와 트림이 자동 계산됩니다.'),
+                      ],
+                    ),
+                  ),
+                  actions: [
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('확인'),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            Future<void> _onTapDraftBox(String key) async {
+              final flare = key.startsWith('MID') ? 0.0 : 30.0;
+              final action = await showModalBottomSheet<String>(
+                context: context,
+                backgroundColor: const Color(0xFF16202A),
+                builder: (ctx) => SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text('${_titles[key]!.replaceAll('\n', ' ')} 흘수 입력',
+                            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 16),
+                        ListTile(
+                          leading: const Icon(Icons.camera_alt, color: Colors.cyanAccent, size: 30),
+                          title: const Text('카메라로 파도 보정 측정하기', style: TextStyle(fontWeight: FontWeight.bold)),
+                          subtitle: const Text('흘수 글자 3곳을 터치하여 자동 측정합니다'),
+                          onTap: () => Navigator.pop(ctx, 'CAMERA'),
+                        ),
+                        ListTile(
+                          leading: const Icon(Icons.edit_note, color: Colors.amberAccent, size: 30),
+                          title: const Text('숫자 직접 입력하기'),
+                          subtitle: const Text('눈으로 읽은 흘수 값을 직접 적습니다'),
+                          onTap: () => Navigator.pop(ctx, 'MANUAL'),
+                        ),
+                        if (_drafts[key] != null)
+                          ListTile(
+                            leading: const Icon(Icons.delete_outline, color: Colors.redAccent),
+                            title: const Text('저장된 값 지우기'),
+                            onTap: () => Navigator.pop(ctx, 'CLEAR'),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+
+              if (action == 'CLEAR') {
+                setState(() => _drafts[key] = null);
+              } else if (action == 'MANUAL') {
+                _showManualInputDialog(key);
+              } else if (action == 'CAMERA') {
+                if (!mounted) return;
+                final measured = await Navigator.push<double>(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => CameraMeasureScreen(
+                      cameras: widget.cameras,
+                      stationTitle: _titles[key]!.replaceAll('\n', ' '),
+                      flareDeg: flare,
+                      initialHintM: _drafts[key] ?? 10.0,
+                    ),
+                  ),
+                );
+                if (measured != null) {
+                  setState(() => _drafts[key] = measured);
+                }
+              }
+            }
+
+            Future<void> _showManualInputDialog(String key) async {
+              final ctrl = TextEditingController(text: _drafts[key]?.toStringAsFixed(2) ?? '');
+              final val = await showDialog<double>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  backgroundColor: const Color(0xFF16202A),
+                  title: Text('${_titles[key]!.replaceAll('\n', ' ')} 직접 입력'),
+                  content: TextField(
+                    controller: ctrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: '흘수 값 (단위: m)',
+                      hintText: '예: 14.52',
+                      suffixText: 'm',
+                    ),
+                  ),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('취소')),
+                    ElevatedButton(
+                      onPressed: () => Navigator.pop(ctx, double.tryParse(ctrl.text)),
+                      child: const Text('저장'),
+                    ),
+                  ],
+                ),
+              );
+              if (val != null) {
+                setState(() => _drafts[key] = val);
+              }
+            }
+
+            double? _meanPair(String k1, String k2) {
+              final v1 = _drafts[k1], v2 = _drafts[k2];
+              if (v1 != null && v2 != null) return (v1 + v2) / 2.0;
+              return v1 ?? v2;
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              final fwdMean = _meanPair('FWD_P', 'FWD_S');
+              final midMean = _meanPair('MID_P', 'MID_S');
+              final aftMean = _meanPair('AFT_P', 'AFT_S');
+              final trim = (fwdMean != null && aftMean != null) ? (aftMean - fwdMean) : null;
+              final qMean = (fwdMean != null && midMean != null && aftMean != null)
+                  ? (fwdMean + 6.0 * midMean + aftMean) / 8.0
+                  : null;
+
+              return Scaffold(
+                appBar: AppBar(
+                  backgroundColor: const Color(0xFF121A24),
+                  title: const Text('선박 6개소 흘수 측정 기록판', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  actions: [
+                    // 우측 상단 물음표 도움말 버튼 추가
+                    IconButton(
+                      icon: const Icon(Icons.help_outline, color: Colors.cyanAccent),
+                      tooltip: '사용법 보기',
+                      onPressed: _showHelpDialog,
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      tooltip: '전체 초기화',
+                      onPressed: () => setState(() => _drafts.updateAll((k, v) => null)),
+                    ),
+                  ],
+                ),
+                body: SafeArea(
+                  child: Column(
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                        color: Colors.teal.withOpacity(0.15),
+                        child: const Text(
+                          '💡 우측 상단 [?] 버튼을 누르면 사용법을 볼 수 있습니다.',
+                          style: TextStyle(color: Colors.cyanAccent, fontSize: 13),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                flex: 3,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    _buildDraftBox('FWD_P', isPort: true),
+                                    _buildDraftBox('MID_P', isPort: true),
+                                    _buildDraftBox('AFT_P', isPort: true),
+                                  ],
+                                ),
+                              ),
+                              Expanded(
+                                flex: 4,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                                  child: CustomPaint(
+                                    painter: ShipHullSketchPainter(),
+                                    child: const Center(
+                                      child: Column(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Padding(
+                                            padding: EdgeInsets.only(top: 32),
+                                            child: Text('선수\n(BOW)', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold)),
+                                          ),
+                                          Text('본선\n(SHIP)', textAlign: TextAlign.center, style: TextStyle(color: Colors.white30, fontSize: 14, fontWeight: FontWeight.bold)),
+                                          Padding(
+                                            padding: EdgeInsets.only(bottom: 18),
+                                            child: Text('선미\n(STERN)', textAlign: TextAlign.center, style: TextStyle(color: Colors.white54, fontSize: 12, fontWeight: FontWeight.bold)),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                flex: 3,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                                  children: [
+                                    _buildDraftBox('FWD_S', isPort: false),
+                                    _buildDraftBox('MID_S', isPort: false),
+                                    _buildDraftBox('AFT_S', isPort: false),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      _buildSummaryCard(fwdMean, midMean, aftMean, trim, qMean),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            Widget _buildDraftBox(String key, {required bool isPort}) {
+              final val = _drafts[key];
+              final hasVal = val != null;
+              final borderColor = hasVal
+                  ? Colors.cyanAccent
+                  : (isPort ? Colors.redAccent.withOpacity(0.6) : Colors.greenAccent.withOpacity(0.6));
+
+              return GestureDetector(
+                onTap: () => _onTapDraftBox(key),
+                child: Container(
+                  width: double.infinity,
+                  height: 92,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: hasVal ? const Color(0xFF172A3A) : const Color(0xFF141C24),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: borderColor, width: hasVal ? 2.2 : 1.5),
+                    boxShadow: hasVal
+                        ? [BoxShadow(color: Colors.cyanAccent.withOpacity(0.15), blurRadius: 8)]
+                        : null,
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        _titles[key]!,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(fontSize: 12, color: hasVal ? Colors.white70 : Colors.white54, height: 1.15),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        hasVal ? '${val.toStringAsFixed(3)} m' : '터치하여 측정',
+                        style: TextStyle(
+                          fontSize: hasVal ? 17 : 12,
+                          fontWeight: FontWeight.bold,
+                          color: hasVal ? Colors.cyanAccent : Colors.amberAccent,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            Widget _buildSummaryCard(double? fwd, double? mid, double? aft, double? trim, double? qMean) {
+              return Container(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF141E28),
+                  borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        _summaryItem('선수 평균', fwd != null ? '${fwd.toStringAsFixed(3)} m' : '-'),
+                        _summaryItem('중앙 평균', mid != null ? '${mid.toStringAsFixed(3)} m' : '-'),
+                        _summaryItem('선미 평균', aft != null ? '${aft.toStringAsFixed(3)} m' : '-'),
+                      ],
+                    ),
+                    const Divider(height: 18, color: Colors.white12),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        _summaryItem(
+                          '선미 트림 (Trim)',
+                          trim != null ? '${trim >= 0 ? "+" : ""}${trim.toStringAsFixed(3)} m' : '-',
+                          valueColor: Colors.amberAccent,
+                        ),
+                        _summaryItem(
+                          '최종 평균 흘수 (M.O.M)',
+                          qMean != null ? '${qMean.toStringAsFixed(3)} m' : '6곳 입력 시 자동계산',
+                          valueColor: Colors.cyanAccent,
+                          isLarge: true,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            Widget _summaryItem(String label, String val, {Color valueColor = Colors.white, bool isLarge = false}) {
+              return Column(
+                children: [
+                  Text(label, style: const TextStyle(fontSize: 11, color: Colors.white60)),
+                  const SizedBox(height: 3),
+                  Text(
+                    val,
+                    style: TextStyle(
+                      fontSize: isLarge ? 18 : 14,
+                      fontWeight: FontWeight.bold,
+                      color: valueColor,
+                    ),
+                  ),
+                ],
+              );
+            }
+          }
+
+          class ShipHullSketchPainter extends CustomPainter {
+            @override
+            void paint(Canvas canvas, Size size) {
+              final w = size.width;
+              final h = size.height;
+
+              final path = Path();
+              path.moveTo(w * 0.5, h * 0.02);
+              path.quadraticBezierTo(w * 0.92, h * 0.28, w * 0.88, h * 0.65);
+              path.lineTo(w * 0.84, h * 0.92);
+              path.quadraticBezierTo(w * 0.5, h * 0.98, w * 0.16, h * 0.92);
+              path.lineTo(w * 0.12, h * 0.65);
+              path.quadraticBezierTo(w * 0.08, h * 0.28, w * 0.5, h * 0.02);
+              path.close();
+
+              final fillPaint = Paint()
+                ..color = const Color(0xFF1A2634)
+                ..style = PaintingStyle.fill;
+              final strokePaint = Paint()
+                ..color = Colors.white70
+                ..style = PaintingStyle.stroke
+                ..strokeWidth = 3.0;
+
+              canvas.drawPath(path, fillPaint);
+              canvas.drawPath(path, strokePaint);
+            }
+
+            @override
+            bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+          }
+
           class SeedPoint {
-            final Offset imagePx, screenPx; final double zMeter;
+            final Offset imagePx, screenPx;
+            final double zMeter;
             SeedPoint({required this.imagePx, required this.screenPx, required this.zMeter});
           }
-          class DraftSurveyScreen extends StatefulWidget {
+
+          class CameraMeasureScreen extends StatefulWidget {
             final List<CameraDescription> cameras;
-            const DraftSurveyScreen({super.key, required this.cameras});
-            @override State<DraftSurveyScreen> createState() => _DraftSurveyScreenState();
+            final String stationTitle;
+            final double flareDeg;
+            final double initialHintM;
+
+            const CameraMeasureScreen({
+              super.key,
+              required this.cameras,
+              required this.stationTitle,
+              required this.flareDeg,
+              required this.initialHintM,
+            });
+
+            @override
+            State<CameraMeasureScreen> createState() => _CameraMeasureScreenState();
           }
-          class _DraftSurveyScreenState extends State<DraftSurveyScreen> {
-            CameraController? _camController; NativeDraftBridge? _bridge; StreamSubscription<AccelerometerEvent>? _imuSub;
-            double _gx = 0.0, _gy = 9.81, _gz = 0.0; bool _isStreaming = false, _isLockedOn = false;
-            double _nextSeedDraftM = 9.0; final List<SeedPoint> _manualSeeds = []; CameraImage? _latestImage;
-            double _instantDraftM = 0.0; Offset _waterlinePx = Offset.zero; List<Offset> _spineCurvePx = [];
-            List<MapEntry<double, Offset>> _trackedMarks = []; int _collectedFrames = 0;
-            @override void initState() {
-              super.initState(); _bridge = NativeDraftBridge(fps: 30.0, flareDeg: 32.0);
-              _imuSub = accelerometerEvents.listen((e) { _gx = 0.85*_gx + 0.15*e.x; _gy = 0.85*_gy + 0.15*e.y; _gz = 0.85*_gz + 0.15*e.z; });
+
+          class _CameraMeasureScreenState extends State<CameraMeasureScreen> {
+            CameraController? _camController;
+            NativeDraftBridge? _bridge;
+            StreamSubscription<AccelerometerEvent>? _imuSub;
+
+            double _gx = 0.0, _gy = 9.81, _gz = 0.0;
+            bool _isStreaming = false, _isLockedOn = false;
+            late double _nextSeedDraftM;
+            final List<SeedPoint> _manualSeeds = [];
+            CameraImage? _latestImage;
+
+            double _instantDraftM = 0.0;
+            Offset _waterlinePx = Offset.zero;
+            List<Offset> _spineCurvePx = [];
+            List<MapEntry<double, Offset>> _trackedMarks = [];
+            int _collectedFrames = 0;
+
+            @override
+            void initState() {
+              super.initState();
+              _nextSeedDraftM = double.parse(widget.initialHintM.toStringAsFixed(1));
+              _bridge = NativeDraftBridge(fps: 30.0, flareDeg: widget.flareDeg);
+              _imuSub = accelerometerEvents.listen((e) {
+                _gx = 0.85 * _gx + 0.15 * e.x;
+                _gy = 0.85 * _gy + 0.15 * e.y;
+                _gz = 0.85 * _gz + 0.15 * e.z;
+              });
               _initCamera();
             }
+
             Future<void> _initCamera() async {
               if (widget.cameras.isEmpty) return;
-              _camController = CameraController(widget.cameras.first, ResolutionPreset.veryHigh, enableAudio: false, imageFormatGroup: ImageFormatGroup.yuv420);
-              await _camController!.initialize(); await _camController!.startImageStream(_onCameraFrame);
+              _camController = CameraController(
+                widget.cameras.first,
+                ResolutionPreset.veryHigh,
+                enableAudio: false,
+                imageFormatGroup: ImageFormatGroup.yuv420,
+              );
+              await _camController!.initialize();
+              await _camController!.startImageStream(_onCameraFrame);
               if (mounted) setState(() {});
             }
+
             void _onCameraFrame(CameraImage img) {
-              _latestImage = img; if (!_isLockedOn || !_isStreaming || _bridge == null) return;
+              _latestImage = img;
+              if (!_isLockedOn || !_isStreaming || _bridge == null) return;
               final y = img.planes[0];
               final tel = _bridge!.processFrame(y.bytes, img.width, img.height, y.bytesPerRow, _gx, _gy, _gz);
               if (tel.statusCode == 1) {
                 final marks = <MapEntry<double, Offset>>[];
-                for (int i = 0; i < tel.activeMarkCount; i++) marks.add(MapEntry(tel.markZ[i], Offset(tel.markU[i], tel.markV[i])));
+                for (int i = 0; i < tel.activeMarkCount; i++) {
+                  marks.add(MapEntry(tel.markZ[i], Offset(tel.markU[i], tel.markV[i])));
+                }
                 final spine = <Offset>[];
-                for (int i = 0; i < tel.spinePtsCount; i++) spine.add(Offset(tel.spineU[i], tel.spineV[i]));
+                for (int i = 0; i < tel.spinePtsCount; i++) {
+                  spine.add(Offset(tel.spineU[i], tel.spineV[i]));
+                }
                 setState(() {
-                  _instantDraftM = tel.instantDraftM; _waterlinePx = Offset(tel.waterlineU, tel.waterlineV);
-                  _trackedMarks = marks; _spineCurvePx = spine; _collectedFrames = tel.collectedFrames;
+                  _instantDraftM = tel.instantDraftM;
+                  _waterlinePx = Offset(tel.waterlineU, tel.waterlineV);
+                  _trackedMarks = marks;
+                  _spineCurvePx = spine;
+                  _collectedFrames = tel.collectedFrames;
                 });
                 if (_collectedFrames >= 1200) _finishAndShowReport();
               }
             }
+
             void _onTapViewfinder(TapUpDetails details, BoxConstraints box) {
               if (_isLockedOn || _latestImage == null) return;
               final u = (details.localPosition.dx / box.maxWidth) * _latestImage!.width.toDouble();
               final v = (details.localPosition.dy / box.maxHeight) * _latestImage!.height.toDouble();
               setState(() {
-                _manualSeeds.add(SeedPoint(imagePx: Offset(u, v), screenPx: details.localPosition, zMeter: _nextSeedDraftM));
-                _nextSeedDraftM = double.parse((_nextSeedDraftM - 0.4).toStringAsFixed(1));
+                _manualSeeds.add(SeedPoint(
+                  imagePx: Offset(u, v),
+                  screenPx: details.localPosition,
+                  zMeter: _nextSeedDraftM,
+                ));
+                _nextSeedDraftM = double.parse((_nextSeedDraftM - 0.2).toStringAsFixed(1));
               });
             }
+
             Future<void> _startLockOnScan() async {
               if (_manualSeeds.length < 2 || _latestImage == null || _camController == null) return;
               await _camController!.setFocusMode(FocusMode.locked);
               await _camController!.setExposureMode(ExposureMode.locked);
               final y = _latestImage!.planes[0];
-              final ok = _bridge!.bootstrapSeeds(y.bytes, _latestImage!.width, _latestImage!.height, y.bytesPerRow,
-                  _manualSeeds.map((s) => s.imagePx.dx).toList(), _manualSeeds.map((s) => s.imagePx.dy).toList(), _manualSeeds.map((s) => s.zMeter).toList());
-              if (ok) setState(() { _isLockedOn = true; _isStreaming = true; });
+              final ok = _bridge!.bootstrapSeeds(
+                y.bytes,
+                _latestImage!.width,
+                _latestImage!.height,
+                y.bytesPerRow,
+                _manualSeeds.map((s) => s.imagePx.dx).toList(),
+                _manualSeeds.map((s) => s.imagePx.dy).toList(),
+                _manualSeeds.map((s) => s.zMeter).toList(),
+              );
+              if (ok) {
+                setState(() {
+                  _isLockedOn = true;
+                  _isStreaming = true;
+                });
+              }
             }
+
             void _finishAndShowReport() {
               setState(() => _isStreaming = false);
               final res = _bridge!.solveFinalSurvey();
               if (res.isValid == 0) return;
-              showModalBottomSheet(context: context, backgroundColor: const Color(0xFF101820), builder: (_) => Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('AWLS + Sainflou 최종 검정서', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  const Divider(height: 24),
-                  Text('${res.trueDraftM.toStringAsFixed(3)} m', style: const TextStyle(fontSize: 44, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
-                  const SizedBox(height: 12),
-                  Text('• 산술 평균 (런업 오염): ${res.simpleMeanM.toStringAsFixed(3)} m'),
-                  Text('• AWLS 파저 중심: ${res.apparentMeanM.toStringAsFixed(3)} m'),
-                  Text('• Sainflou 물리 차감: -${res.sainflouDeductMm.toStringAsFixed(1)} mm'),
-                  const SizedBox(height: 20),
-                ]),
-              ));
-            }
-            @override void dispose() { _imuSub?.cancel(); _camController?.dispose(); _bridge?.dispose(); super.dispose(); }
-            @override Widget build(BuildContext context) {
-              if (_camController == null || !_camController!.value.isInitialized) return const Scaffold(body: Center(child: CircularProgressIndicator()));
-              return Scaffold(body: SafeArea(child: Column(children: [
-                Container(padding: const EdgeInsets.all(12), color: Colors.black87, child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  const Text('측정 모드 (Model-free PCHIP)', style: TextStyle(color: Colors.cyanAccent)),
-                  Text(_isLockedOn ? '순간: ${_instantDraftM.toStringAsFixed(3)}m' : '마크 터치: ${_manualSeeds.length}/3', style: const TextStyle(color: Colors.white)),
-                ])),
-                Expanded(child: LayoutBuilder(builder: (ctx, box) => GestureDetector(
-                  onTapUp: (d) => _onTapViewfinder(d, box),
-                  child: Stack(fit: StackFit.expand, children: [
-                    CameraPreview(_camController!),
-                    CustomPaint(painter: DraftAROverlayPainter(isLockedOn: _isLockedOn, seeds: _manualSeeds, spinePx: _spineCurvePx, marks: _trackedMarks, waterlinePx: _waterlinePx, imgWidth: _latestImage?.width.toDouble() ?? 1920, imgHeight: _latestImage?.height.toDouble() ?? 1080)),
-                  ]),
-                ))),
-                Container(padding: const EdgeInsets.all(12), color: const Color(0xFF121212), child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  if (!_isLockedOn) Row(children: [
-                    const Text('다음 마크 Z: '),
-                    IconButton(icon: const Icon(Icons.remove), onPressed: () => setState(() => _nextSeedDraftM = double.parse((_nextSeedDraftM - 0.2).toStringAsFixed(1)))),
-                    Text('${_nextSeedDraftM.toStringAsFixed(1)} m', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amberAccent)),
-                    IconButton(icon: const Icon(Icons.add), onPressed: () => setState(() => _nextSeedDraftM = double.parse((_nextSeedDraftM + 0.2).toStringAsFixed(1)))),
-                    const Spacer(),
-                    TextButton(onPressed: () => setState(() => _manualSeeds.clear()), child: const Text('초기화')),
-                  ]),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(backgroundColor: _isLockedOn ? Colors.redAccent : Colors.teal, minimumSize: const Size.fromHeight(45)),
-                    icon: Icon(_isLockedOn ? Icons.stop : Icons.play_arrow),
-                    label: Text(_isLockedOn ? '스캔 완료 및 리포트' : '스파인 록온 시작'),
-                    onPressed: _isLockedOn ? _finishAndShowReport : _startLockOnScan,
+
+              showModalBottomSheet(
+                context: context,
+                isDismissible: false,
+                backgroundColor: const Color(0xFF101820),
+                builder: (ctx) => Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('${widget.stationTitle} 파도 보정 결과',
+                          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      const Divider(height: 20),
+                      const Text('최종 정밀 흘수 (너울/물보라 제거됨)', style: TextStyle(fontSize: 12, color: Colors.white70)),
+                      Text('${res.trueDraftM.toStringAsFixed(3)} m',
+                          style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+                      const SizedBox(height: 10),
+                      Text('• 단순 평균 (물보라 포함): ${res.simpleMeanM.toStringAsFixed(3)} m'),
+                      Text('• 파도 흔들림 폭 (파고): 약 ${res.swellHeightM.toStringAsFixed(2)} m'),
+                      Text('• 선체 반사파 보정량: -${res.sainflouDeductMm.toStringAsFixed(1)} mm'),
+                      const SizedBox(height: 20),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.pop(ctx),
+                              child: const Text('다시 찍기'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            flex: 2,
+                            child: ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(backgroundColor: Colors.teal),
+                              icon: const Icon(Icons.check_circle),
+                              label: const Text('이 값으로 기록판에 저장', style: TextStyle(fontWeight: FontWeight.bold)),
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                Navigator.pop(context, res.trueDraftM);
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
-                ])),
-              ])));
+                ),
+              );
+            }
+
+            @override
+            void dispose() {
+              _imuSub?.cancel();
+              _camController?.dispose();
+              _bridge?.dispose();
+              super.dispose();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              if (_camController == null || !_camController!.value.isInitialized) {
+                return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              }
+              final sec = (_collectedFrames / 30.0).toStringAsFixed(1);
+              return Scaffold(
+                appBar: AppBar(
+                  backgroundColor: Colors.black87,
+                  title: Text(widget.stationTitle, style: const TextStyle(fontSize: 16)),
+                ),
+                body: SafeArea(
+                  child: Column(
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(10),
+                        color: Colors.black87,
+                        child: Text(
+                          _isLockedOn
+                              ? '🌊 실시간 물선 위치: ${_instantDraftM.toStringAsFixed(3)} m (측정 시간: ${sec}초 / 권장 30초 이상)'
+                              : '👆 화면 속 흘수 글자의 [맨 아랫줄]을 위에서부터 2~3곳 터치해 주세요 (${_manualSeeds.length}곳 선택됨)',
+                          style: const TextStyle(color: Colors.amberAccent, fontSize: 13, fontWeight: FontWeight.bold),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      Expanded(
+                        child: LayoutBuilder(
+                          builder: (ctx, box) => GestureDetector(
+                            onTapUp: (d) => _onTapViewfinder(d, box),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                CameraPreview(_camController!),
+                                CustomPaint(
+                                  painter: DraftAROverlayPainter(
+                                    isLockedOn: _isLockedOn,
+                                    seeds: _manualSeeds,
+                                    spinePx: _spineCurvePx,
+                                    marks: _trackedMarks,
+                                    waterlinePx: _waterlinePx,
+                                    imgWidth: _latestImage?.width.toDouble() ?? 1920,
+                                    imgHeight: _latestImage?.height.toDouble() ?? 1080,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        color: const Color(0xFF121212),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (!_isLockedOn)
+                              Row(
+                                children: [
+                                  const Text('지금 터치할 글자 높이: ', style: TextStyle(fontSize: 13)),
+                                  IconButton(
+                                    icon: const Icon(Icons.remove_circle_outline),
+                                    onPressed: () => setState(() => _nextSeedDraftM = double.parse((_nextSeedDraftM - 0.2).toStringAsFixed(1))),
+                                  ),
+                                  Text('${_nextSeedDraftM.toStringAsFixed(1)} m',
+                                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+                                  IconButton(
+                                    icon: const Icon(Icons.add_circle_outline),
+                                    onPressed: () => setState(() => _nextSeedDraftM = double.parse((_nextSeedDraftM + 0.2).toStringAsFixed(1))),
+                                  ),
+                                  const Spacer(),
+                                  TextButton(
+                                    onPressed: () => setState(() => _manualSeeds.clear()),
+                                    child: const Text('다시 찍기'),
+                                  ),
+                                ],
+                              ),
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _isLockedOn ? Colors.redAccent : Colors.teal,
+                                minimumSize: const Size.fromHeight(48),
+                              ),
+                              icon: Icon(_isLockedOn ? Icons.check_circle_outline : Icons.lock_outline),
+                              label: Text(
+                                _isLockedOn
+                                    ? '측정 완료 및 결과 보기 (${sec}초 촬영됨)'
+                                    : '눈금 고정 및 흔들림 방지 측정 시작',
+                                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                              ),
+                              onPressed: _isLockedOn ? _finishAndShowReport : _startLockOnScan,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
             }
           }
+
           class DraftAROverlayPainter extends CustomPainter {
-            final bool isLockedOn; final List<SeedPoint> seeds; final List<Offset> spinePx;
-            final List<MapEntry<double, Offset>> marks; final Offset waterlinePx; final double imgWidth, imgHeight;
-            DraftAROverlayPainter({required this.isLockedOn, required this.seeds, required this.spinePx, required this.marks, required this.waterlinePx, required this.imgWidth, required this.imgHeight});
+            final bool isLockedOn;
+            final List<SeedPoint> seeds;
+            final List<Offset> spinePx;
+            final List<MapEntry<double, Offset>> marks;
+            final Offset waterlinePx;
+            final double imgWidth, imgHeight;
+
+            DraftAROverlayPainter({
+              required this.isLockedOn,
+              required this.seeds,
+              required this.spinePx,
+              required this.marks,
+              required this.waterlinePx,
+              required this.imgWidth,
+              required this.imgHeight,
+            });
+
             Offset _toScreen(Offset pt, Size sz) => Offset((pt.dx / imgWidth) * sz.width, (pt.dy / imgHeight) * sz.height);
-            @override void paint(Canvas canvas, Size size) {
+
+            @override
+            void paint(Canvas canvas, Size size) {
               if (!isLockedOn) {
                 final p = Paint()..color = Colors.amberAccent..style = PaintingStyle.stroke..strokeWidth = 2.5;
-                for (final s in seeds) canvas.drawCircle(s.screenPx, 10, p);
+                for (final s in seeds) {
+                  canvas.drawCircle(s.screenPx, 12, p);
+                  final tp = TextPainter(
+                    text: TextSpan(
+                      text: '${s.zMeter.toStringAsFixed(1)}m',
+                      style: const TextStyle(color: Colors.amberAccent, fontSize: 12, fontWeight: FontWeight.bold),
+                    ),
+                    textDirection: TextDirection.ltr,
+                  )..layout();
+                  tp.paint(canvas, s.screenPx + const Offset(14, -6));
+                }
                 return;
               }
               if (spinePx.length >= 2) {
-                final path = Path(); final p0 = _toScreen(spinePx.first, size); path.moveTo(p0.dx, p0.dy);
-                for (int i = 1; i < spinePx.length; i++) { final pi = _toScreen(spinePx[i], size); path.lineTo(pi.dx, pi.dy); }
+                final path = Path();
+                final p0 = _toScreen(spinePx.first, size);
+                path.moveTo(p0.dx, p0.dy);
+                for (int i = 1; i < spinePx.length; i++) {
+                  final pi = _toScreen(spinePx[i], size);
+                  path.lineTo(pi.dx, pi.dy);
+                }
                 canvas.drawPath(path, Paint()..color = Colors.greenAccent..style = PaintingStyle.stroke..strokeWidth = 2.5);
               }
               for (final m in marks) {
@@ -480,9 +1099,11 @@ jobs:
                 canvas.drawLine(Offset(sc.dx - 14, sc.dy), Offset(sc.dx + 14, sc.dy), Paint()..color = Colors.cyanAccent..strokeWidth = 2.0);
               }
               final wl = _toScreen(waterlinePx, size);
-              canvas.drawLine(Offset(wl.dx - 55, wl.dy), Offset(wl.dx + 55, wl.dy), Paint()..color = Colors.redAccent..strokeWidth = 3.0);
+              canvas.drawLine(Offset(wl.dx - 60, wl.dy), Offset(wl.dx + 60, wl.dy), Paint()..color = Colors.redAccent..strokeWidth = 3.5);
             }
-            @override bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+
+            @override
+            bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
           }
           EOF
 
